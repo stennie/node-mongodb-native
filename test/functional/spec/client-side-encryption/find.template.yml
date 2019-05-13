@@ -1,0 +1,121 @@
+runOn:
+  - minServerVersion: "4.1.10"
+database_name: &database_name "default"
+collection_name: &collection_name "default"
+
+data:
+  - &doc0_encrypted { _id: 1, ssn: {{ciphertext("457-55-5462", field="ssn")}} }
+  - &doc1_encrypted { _id: 2, ssn: {{ciphertext("123-45-6789", field="ssn")}} }
+json_schema: {{schema()}}
+key_vault_data: [{{key()}}]
+
+tests:
+  - description: "Find with deterministic encryption"
+    clientOptions:
+      auto_encrypt_opts:
+        kms_providers:
+          aws: {} # Credentials filled in from environment.
+    operations:
+      - name: find
+        arguments:
+          filter:
+            { ssn: "457-55-5462" }
+        result:
+          - &doc0 { _id: 1, ssn: "457-55-5462" }
+    expectations:
+      # Auto encryption will request the collection info.
+      - command_started_event:
+          command:
+            listCollections: 1
+            cursor: {}
+            filter:
+              name: *collection_name
+          command_name: listCollections
+      - command_started_event:
+          command:
+            listCollections: 1
+            cursor: {}
+            filter:
+              name: "datakeys"
+            $db: admin
+          command_name: listCollections
+      # Then key is fetched from the key vault.
+      - command_started_event:
+          command:
+            find: datakeys
+            filter: { _id: { $in: [ {{key()["_id"]}} ] } }
+            $db: admin
+          command_name: find
+      - command_started_event:
+          command:
+            find: *collection_name
+            filter:
+              { ssn: { $eq: {{ciphertext("457-55-5462", field="ssn")}} } }
+          command_name: find
+    outcome:
+      collection:
+        # Outcome is checked using a separate MongoClient without auto encryption.
+        data:
+          - *doc0_encrypted
+          - *doc1_encrypted
+  - description: "Find with $in with deterministic encryption"
+    clientOptions:
+      auto_encrypt_opts:
+        kms_providers:
+          aws: {} # Credentials filled in from environment.
+    operations:
+      - name: find
+        arguments:
+          filter:
+            { ssn: { $in: [ "457-55-5462", "123-45-6789" ] } }
+        result:
+          - { _id: 1, ssn: "457-55-5462" }
+          - &doc1 { _id: 2, ssn: "123-45-6789" }
+    expectations:
+      # Auto encryption will request the collection info.
+      - command_started_event:
+          command:
+            listCollections: 1
+            cursor: {}
+            filter:
+              name: *collection_name
+          command_name: listCollections
+      - command_started_event:
+          command:
+            listCollections: 1
+            cursor: {}
+            filter:
+              name: "datakeys"
+            $db: admin
+          command_name: listCollections
+      # Then key is fetched from the key vault.
+      - command_started_event:
+          command:
+            find: datakeys
+            filter: { _id: { $in: [ {{key()["_id"]}} ] } }
+            $db: admin
+          command_name: find
+      - command_started_event:
+          command:
+            find: *collection_name
+            filter:
+              # Note, the values are re-ordered, but this is logically equivalent.
+              { ssn: { $in: [ {{ciphertext("123-45-6789", field="ssn")}}, {{ciphertext("457-55-5462", field="ssn")}} ] } }
+          command_name: find
+    outcome:
+      collection:
+        # Outcome is checked using a separate MongoClient without auto encryption.
+        data:
+          - *doc0_encrypted
+          - {{ciphertext("123-45-6789", field="ssn")}}
+  - description: "Find fails when filtering on a random encrypted field"
+    clientOptions:
+      auto_encrypt_opts:
+        kms_providers:
+          aws: {} # Credentials filled in from environment
+    operations:
+      - name: find
+        arguments:
+          filter: { random: "abc" }
+        result:
+          errorContains: "Cannot query on fields encrypted with the randomized encryption"
